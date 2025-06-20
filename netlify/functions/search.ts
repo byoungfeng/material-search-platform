@@ -1,4 +1,4 @@
-import { type NextRequest, NextResponse } from "next/server"
+import type { Handler, HandlerEvent, HandlerContext } from "@netlify/functions"
 
 // 添加超时配置
 const TIMEOUT_MS = 8000 // 8秒超时
@@ -49,20 +49,80 @@ interface PixabayVideoResult {
   userImageURL: string
 }
 
-export async function GET(request: NextRequest) {
+// 演示图片数据
+const getDemoImages = (query: string) => {
+  const categories = {
+    business: ["business", "office", "meeting", "corporate"],
+    nature: ["nature", "landscape", "forest", "mountain"],
+    technology: ["technology", "computer", "digital", "innovation"],
+    food: ["food", "cooking", "restaurant", "cuisine"],
+    sports: ["sports", "fitness", "exercise", "athlete"],
+    city: ["city", "urban", "architecture", "building"],
+    family: ["family", "people", "children", "home"],
+    education: ["education", "school", "learning", "books"],
+    medical: ["medical", "health", "hospital", "doctor"],
+    travel: ["travel", "vacation", "tourism", "adventure"],
+  }
+
+  let category = "business"
+  for (const [key, keywords] of Object.entries(categories)) {
+    if (keywords.some((keyword) => query.toLowerCase().includes(keyword))) {
+      category = key
+      break
+    }
+  }
+
+  return category
+}
+
+export const handler: Handler = async (event: HandlerEvent, context: HandlerContext) => {
+  // 设置 CORS 头部
+  const headers = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Content-Type": "application/json",
+  }
+
+  // 处理 OPTIONS 请求
+  if (event.httpMethod === "OPTIONS") {
+    return {
+      statusCode: 200,
+      headers,
+      body: "",
+    }
+  }
+
+  // 只允许 GET 请求
+  if (event.httpMethod !== "GET") {
+    return {
+      statusCode: 405,
+      headers,
+      body: JSON.stringify({ error: "Method not allowed" }),
+    }
+  }
+
   try {
-    const searchParams = request.nextUrl.searchParams
-    const query = searchParams.get("q") || ""
-    const type = searchParams.get("type") || "all"
-    const page = Number.parseInt(searchParams.get("page") || "1")
+    const queryParams = event.queryStringParameters || {}
+    const query = queryParams.q || ""
+    const type = queryParams.type || "all"
+    const page = Number.parseInt(queryParams.page || "1")
 
     // 验证参数
     if (!query.trim()) {
-      return NextResponse.json({ error: "Query parameter is required" }, { status: 400 })
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({ error: "Query parameter is required" }),
+      }
     }
 
     if (page < 1 || page > 100) {
-      return NextResponse.json({ error: "Invalid page number" }, { status: 400 })
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({ error: "Invalid page number" }),
+      }
     }
 
     // 检查API密钥配置
@@ -72,14 +132,14 @@ export async function GET(request: NextRequest) {
     let translatedText = query
 
     try {
-      // 1. 翻译查询词 - 添加超时控制
+      // 1. 翻译查询词
       const translationResponse = await withTimeout(
-        fetch(`${request.nextUrl.origin}/api/translate`, {
+        fetch(`${event.headers.origin || "https://zhmaterial.netlify.app"}/.netlify/functions/translate`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text: query }),
         }),
-        3000, // 3秒超时
+        3000,
       )
 
       if (translationResponse.ok) {
@@ -88,7 +148,6 @@ export async function GET(request: NextRequest) {
       }
     } catch (error) {
       console.warn("Translation failed, using original query:", error)
-      // 翻译失败时继续使用原始查询
     }
 
     // 2. 搜索素材
@@ -97,7 +156,6 @@ export async function GET(request: NextRequest) {
         searchResults = await withTimeout(performPixabaySearch(translatedText, type, page), TIMEOUT_MS)
       } catch (error) {
         console.error("Pixabay API error:", error)
-        // API失败时回退到模拟数据
         searchResults = await generateMockResults(query, translatedText, type, page)
         searchResults.usingMockData = true
       }
@@ -106,46 +164,49 @@ export async function GET(request: NextRequest) {
       searchResults.usingMockData = true
     }
 
-    return NextResponse.json({
-      query: query,
-      translatedQuery: translatedText,
-      type: type,
-      page: page,
-      totalHits: searchResults.totalHits || 0,
-      hits: searchResults.hits || [],
-      usingMockData: searchResults.usingMockData || !isApiKeyConfigured,
-      rateLimit: searchResults.rateLimit,
-    })
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        query: query,
+        translatedQuery: translatedText,
+        type: type,
+        page: page,
+        totalHits: searchResults.totalHits || 0,
+        hits: searchResults.hits || [],
+        usingMockData: searchResults.usingMockData || !isApiKeyConfigured,
+        rateLimit: searchResults.rateLimit,
+      }),
+    }
   } catch (error) {
     console.error("Search API error:", error)
 
-    const searchParams = request.nextUrl.searchParams
+    const queryParams = event.queryStringParameters || {} // Declare queryParams here
 
-    // 返回友好的错误响应
-    return NextResponse.json(
-      {
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
         error: "Search service temporarily unavailable",
-        query: searchParams.get("q") || "",
-        translatedQuery: searchParams.get("q") || "",
-        type: searchParams.get("type") || "all",
-        page: Number.parseInt(searchParams.get("page") || "1"),
+        query: queryParams.q || "",
+        translatedQuery: queryParams.q || "",
+        type: queryParams.type || "all",
+        page: Number.parseInt(queryParams.page || "1"),
         totalHits: 0,
         hits: [],
         usingMockData: true,
-      },
-      { status: 200 },
-    )
+      }),
+    }
   }
 }
 
-// 新增：统一的Pixabay搜索函数
+// 统一的Pixabay搜索函数
 async function performPixabaySearch(query: string, type: string, page: number) {
   if (type === "videos") {
     return await searchPixabayVideos(query, page)
   } else if (type === "photos") {
     return await searchPixabayImages(query, page)
   } else {
-    // 并行搜索图片和视频，但添加错误处理
     try {
       const [imageResults, videoResults] = await Promise.allSettled([
         searchPixabayImages(query, page, 10),
@@ -162,17 +223,15 @@ async function performPixabaySearch(query: string, type: string, page: number) {
       }
     } catch (error) {
       console.error("Parallel search failed:", error)
-      // 如果并行搜索失败，尝试只搜索图片
       return await searchPixabayImages(query, page)
     }
   }
 }
 
-// 改进的模拟数据生成函数
+// 模拟数据生成函数
 async function generateMockResults(originalQuery: string, translatedQuery: string, type: string, page: number) {
-  await new Promise((resolve) => setTimeout(resolve, 300)) // 模拟API延迟
+  await new Promise((resolve) => setTimeout(resolve, 300))
 
-  // 使用Unsplash作为演示图片源
   const baseResults = [
     {
       id: 1,
@@ -255,7 +314,7 @@ async function generateMockResults(originalQuery: string, translatedQuery: strin
   const hits = []
   for (let i = 0; i < resultsPerPage; i++) {
     const baseItem = filteredResults[i % filteredResults.length]
-    const imageId = 1560472354 + i // 使用不同的Unsplash图片ID
+    const imageId = 1560472354 + i
     hits.push({
       ...baseItem,
       id: (page - 1) * resultsPerPage + i + 1,
@@ -281,19 +340,19 @@ async function generateMockResults(originalQuery: string, translatedQuery: strin
   }
 }
 
-// 搜索Pixabay图片 - 改进版
+// 搜索Pixabay图片
 async function searchPixabayImages(query: string, page: number, perPage = 20) {
   const params = new URLSearchParams({
     key: PIXABAY_API_KEY,
-    q: query.slice(0, 100), // 限制查询长度
+    q: query.slice(0, 100),
     image_type: "photo",
     orientation: "all",
     category: "",
     min_width: "0",
     min_height: "0",
     order: "popular",
-    page: Math.min(page, 50).toString(), // 限制页数
-    per_page: Math.min(perPage, 200).toString(), // 限制每页数量
+    page: Math.min(page, 50).toString(),
+    per_page: Math.min(perPage, 200).toString(),
     safesearch: "true",
   })
 
@@ -311,12 +370,6 @@ async function searchPixabayImages(query: string, page: number, perPage = 20) {
     clearTimeout(timeoutId)
 
     if (!response.ok) {
-      if (response.status === 429) {
-        throw new Error("Rate limit exceeded")
-      }
-      if (response.status >= 500) {
-        throw new Error("Pixabay server error")
-      }
       throw new Error(`HTTP ${response.status}`)
     }
 
@@ -352,7 +405,7 @@ async function searchPixabayImages(query: string, page: number, perPage = 20) {
   }
 }
 
-// 搜索Pixabay视频 - 改进版
+// 搜索Pixabay视频
 async function searchPixabayVideos(query: string, page: number, perPage = 20) {
   const params = new URLSearchParams({
     key: PIXABAY_API_KEY,
@@ -381,12 +434,6 @@ async function searchPixabayVideos(query: string, page: number, perPage = 20) {
     clearTimeout(timeoutId)
 
     if (!response.ok) {
-      if (response.status === 429) {
-        throw new Error("Rate limit exceeded")
-      }
-      if (response.status >= 500) {
-        throw new Error("Pixabay server error")
-      }
       throw new Error(`HTTP ${response.status}`)
     }
 

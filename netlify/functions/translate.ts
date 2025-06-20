@@ -1,4 +1,4 @@
-import { type NextRequest, NextResponse } from "next/server"
+import type { Handler, HandlerEvent, HandlerContext } from "@netlify/functions"
 
 // 翻译缓存
 const translationCache = new Map<string, string>()
@@ -138,12 +138,10 @@ const manualTranslations: Record<string, string> = {
   户外运动: "outdoor sports",
 }
 
-// 在文件开头添加超时配置
-const TRANSLATION_TIMEOUT = 3000 // 3秒超时
+const TRANSLATION_TIMEOUT = 3000
 
 // 免费翻译API选项
 const FREE_TRANSLATION_APIS = {
-  // Google翻译免费API (通过代理) - 改进版
   google: async (text: string) => {
     try {
       const controller = new AbortController()
@@ -172,7 +170,6 @@ const FREE_TRANSLATION_APIS = {
     return null
   },
 
-  // LibreTranslate免费API - 改进版
   libre: async (text: string) => {
     try {
       const controller = new AbortController()
@@ -205,7 +202,6 @@ const FREE_TRANSLATION_APIS = {
     return null
   },
 
-  // MyMemory免费API - 改进版
   mymemory: async (text: string) => {
     try {
       const controller = new AbortController()
@@ -234,37 +230,71 @@ const FREE_TRANSLATION_APIS = {
   },
 }
 
-// 修改 POST 函数
-export async function POST(request: NextRequest) {
+export const handler: Handler = async (event: HandlerEvent, context: HandlerContext) => {
+  const headers = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Content-Type": "application/json",
+  }
+
+  if (event.httpMethod === "OPTIONS") {
+    return {
+      statusCode: 200,
+      headers,
+      body: "",
+    }
+  }
+
+  if (event.httpMethod !== "POST") {
+    return {
+      statusCode: 405,
+      headers,
+      body: JSON.stringify({ error: "Method not allowed" }),
+    }
+  }
+
   try {
-    const body = await request.json()
+    const body = JSON.parse(event.body || "{}")
     const { text } = body
 
     if (!text || typeof text !== "string") {
-      return NextResponse.json({ error: "Invalid text parameter" }, { status: 400 })
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({ error: "Invalid text parameter" }),
+      }
     }
 
-    const cleanText = text.trim().slice(0, 500) // 限制文本长度
+    const cleanText = text.trim().slice(0, 500)
 
     // 检查缓存
     if (translationCache.has(cleanText)) {
-      return NextResponse.json({
-        translatedText: translationCache.get(cleanText),
-        cached: true,
-      })
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify({
+          translatedText: translationCache.get(cleanText),
+          cached: true,
+        }),
+      }
     }
 
     // 检查手动翻译映射
     if (manualTranslations[cleanText]) {
       const translation = manualTranslations[cleanText]
       translationCache.set(cleanText, translation)
-      return NextResponse.json({
-        translatedText: translation,
-        source: "manual",
-      })
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify({
+          translatedText: translation,
+          source: "manual",
+        }),
+      }
     }
 
-    // 尝试免费翻译API - 添加超时控制
+    // 尝试免费翻译API
     let translatedText = null
     let usedService = null
 
@@ -295,40 +325,33 @@ export async function POST(request: NextRequest) {
     // 缓存结果
     translationCache.set(cleanText, translatedText)
 
-    return NextResponse.json({
-      translatedText: translatedText,
-      source: usedService,
-    })
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        translatedText: translatedText,
+        source: usedService,
+      }),
+    }
   } catch (error) {
     console.error("Translation error:", error)
 
-    // 错误回退：使用本地翻译
-    try {
-      const body = await request.json()
-      const { text } = body
-      const localTranslation = await translateLocally(text?.slice(0, 500) || "")
-      return NextResponse.json({
-        translatedText: localTranslation,
-        source: "fallback",
-      })
-    } catch (fallbackError) {
-      console.error("Fallback translation failed:", fallbackError)
-      return NextResponse.json({
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
         translatedText: "search content",
         source: "default",
-      })
+      }),
     }
   }
 }
 
-// 改进的本地翻译逻辑
+// 本地翻译逻辑
 async function translateLocally(text: string): Promise<string> {
-  // 模拟API延迟
   await new Promise((resolve) => setTimeout(resolve, 100))
 
-  // 常见词汇翻译表
   const commonTranslations: Record<string, string> = {
-    // 基础词汇
     视频: "video",
     图片: "image",
     照片: "photo",
@@ -337,8 +360,6 @@ async function translateLocally(text: string): Promise<string> {
     素材: "material",
     内容: "content",
     资源: "resource",
-
-    // 商业相关
     商务: "business",
     商业: "business",
     会议: "meeting",
@@ -349,8 +370,6 @@ async function translateLocally(text: string): Promise<string> {
     企业: "enterprise",
     公司: "company",
     职业: "professional",
-
-    // 自然相关
     自然: "nature",
     风景: "landscape",
     山: "mountain",
@@ -363,8 +382,6 @@ async function translateLocally(text: string): Promise<string> {
     动物: "animal",
     鸟: "bird",
     鱼: "fish",
-
-    // 科技相关
     科技: "technology",
     技术: "technology",
     电脑: "computer",
@@ -375,8 +392,6 @@ async function translateLocally(text: string): Promise<string> {
     硬件: "hardware",
     互联网: "internet",
     人工智能: "artificial intelligence",
-
-    // 生活相关
     美食: "food",
     烹饪: "cooking",
     运动: "sports",
@@ -387,8 +402,6 @@ async function translateLocally(text: string): Promise<string> {
     汽车: "car",
     购物: "shopping",
     娱乐: "entertainment",
-
-    // 艺术相关
     艺术: "art",
     设计: "design",
     创意: "creative",
@@ -399,8 +412,6 @@ async function translateLocally(text: string): Promise<string> {
     摄影: "photography",
     电影: "movie",
     文化: "culture",
-
-    // 教育相关
     教育: "education",
     学习: "learning",
     学校: "school",
@@ -411,8 +422,6 @@ async function translateLocally(text: string): Promise<string> {
     研究: "research",
     科学: "science",
     历史: "history",
-
-    // 医疗相关
     医疗: "medical",
     健康: "health",
     医院: "hospital",
@@ -423,8 +432,6 @@ async function translateLocally(text: string): Promise<string> {
     手术: "surgery",
     检查: "examination",
     康复: "rehabilitation",
-
-    // 旅行相关
     旅行: "travel",
     度假: "vacation",
     城市: "city",
@@ -435,8 +442,6 @@ async function translateLocally(text: string): Promise<string> {
     汽车: "car",
     地图: "map",
     景点: "attraction",
-
-    // 时间相关
     日出: "sunrise",
     日落: "sunset",
     夜晚: "night",
@@ -448,8 +453,6 @@ async function translateLocally(text: string): Promise<string> {
     夏天: "summer",
     秋天: "autumn",
     冬天: "winter",
-
-    // 颜色相关
     红色: "red",
     蓝色: "blue",
     绿色: "green",
@@ -462,21 +465,16 @@ async function translateLocally(text: string): Promise<string> {
     粉色: "pink",
   }
 
-  // 智能翻译逻辑
   let translatedText = text
 
-  // 1. 直接词汇替换
   for (const [chinese, english] of Object.entries(commonTranslations)) {
     if (text.includes(chinese)) {
       translatedText = translatedText.replace(new RegExp(chinese, "g"), english)
     }
   }
 
-  // 2. 如果翻译后的文本与原文相同，尝试拼音转换
   if (translatedText === text) {
-    // 检查是否包含中文字符
     if (/[\u4e00-\u9fff]/.test(text)) {
-      // 简单的拼音映射（部分常用字）
       const pinyinMap: Record<string, string> = {
         商: "shang",
         业: "ye",
@@ -518,7 +516,6 @@ async function translateLocally(text: string): Promise<string> {
     }
   }
 
-  // 3. 如果还是没有变化，添加通用后缀
   if (translatedText === text && /[\u4e00-\u9fff]/.test(text)) {
     translatedText = `${text} content`
   }

@@ -50,7 +50,7 @@ interface ApiResponse {
 function ImageWithFallback({
   src,
   alt,
-  className,
+  className = "",
   fallbackSrc,
   ...props
 }: {
@@ -58,7 +58,7 @@ function ImageWithFallback({
   alt: string
   className?: string
   fallbackSrc?: string
-  [key: string]: any
+  loading?: "lazy" | "eager"
 }) {
   const [imgSrc, setImgSrc] = useState(src)
   const [isLoading, setIsLoading] = useState(true)
@@ -117,7 +117,7 @@ async function fetchSearchResults(query: string, type: string, page: number): Pr
   })
 
   if (!response.ok) {
-    const errorData = await response.json()
+    const errorData = await response.json().catch(() => ({ error: "Network error" }))
     throw new Error(errorData.error || "Search failed")
   }
 
